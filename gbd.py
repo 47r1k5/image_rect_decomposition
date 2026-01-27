@@ -507,12 +507,12 @@ def gbd_decompose(mask: np.ndarray, seed: int = 0, max_iter: int = 200000) -> Li
                 continue
 
             any_concave = True
-            v = rng.choice(conc)
+            v = conc[0]
             dirs = _inward_dirs(local, v, rr0, cc0, block_h, block_v)
             if not dirs:
                 continue
 
-            chord = _extend_chord(local, v, rng.choice(dirs), rr0, cc0, block_h, block_v)
+            chord = _extend_chord(local, v, dirs[0], rr0, cc0, block_h, block_v)
             if chord is None:
                 continue
 
@@ -622,6 +622,7 @@ def main():
         rec = {"file": str(p), "ok": False}
         t0 = time.perf_counter()
         try:
+            print(f"Processing file: {p}")
             mask = load_binary_mask(str(p), strict=not args.non_strict)
             rects = gbd_decompose(mask, seed=args.seed, max_iter=args.max_iter)
             rec["rectangles"] = len(rects)
@@ -633,9 +634,7 @@ def main():
                 out_path = save_dir / f"{p.stem}_gbd.png"
                 visualize(mask, rects, seed=args.seed, save=str(out_path))
             else:
-                # show interactive plot only for single-file mode
-                if args.input:
-                    visualize(mask, rects, seed=args.seed, save=None)
+                visualize(mask, rects, seed=args.seed, save=None)
 
         except Exception as e:
             rec["error"] = f"{type(e).__name__}: {e}"
