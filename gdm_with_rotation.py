@@ -76,6 +76,8 @@ def find_best_rotation(file_name):
     
     best_angle = 0
     number_of_rectangles = float('inf')
+    worst_angle = 0
+    max_number_of_rectangles = 0
     
     for theta in theta_list:
         print(f"Testing angle: {theta}")
@@ -84,12 +86,16 @@ def find_best_rotation(file_name):
         if len(rectangles) < number_of_rectangles:
             number_of_rectangles = len(rectangles)
             best_angle = theta
+        if len(rectangles) > max_number_of_rectangles:
+            max_number_of_rectangles = len(rectangles)
+            worst_angle = theta
     
     gdm_with_rotation(file_name, best_angle, show_original=True, show_decomposed=True)
     print(f"Best angle: {best_angle} with {number_of_rectangles} rectangles")
+    print(f"Worst angle: {worst_angle} with {max_number_of_rectangles} rectangles")
     
     
 if __name__ == "__main__":
     #gdm_with_rotation(r'TestImages\simple.tif', angle=45, show_original=True, show_decomposed=True)
     #batch_process_images(r'TestImages', theta=45)
-    find_best_rotation(r'TestImages\6_circle.tif')
+    find_best_rotation(r'TestImages\simple.tif')
