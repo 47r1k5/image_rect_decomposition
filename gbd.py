@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""
-GBD rectangular decomposition + visualization (binary image inputs only).
-
-Input:
-  - A *binary* image file (0/1 or 0/255). Supported: .tif/.tiff/.png/.bmp/.jpg, etc.
-    (via Pillow). The script enforces binarity: only two unique values allowed after
-    grayscale conversion; otherwise it errors.
-
-Output:
-  - Displays original + decomposed rectangles, and optionally saves a figure.
-
-Usage:
-  python gbd_binary_visualize.py path/to/mask.tif
-  python gbd_binary_visualize.py path/to/mask.png --save out.png
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -28,8 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from PIL import Image  # pillow supports TIFF
-import os
+from PIL import Image
 from pathlib import Path
 import time
 import json
@@ -484,7 +466,7 @@ def gbd_decompose(mask: np.ndarray, seed: int = 0, max_iter: int = 200000) -> Li
         raise ValueError(f"mask must be binary {0,1}, found values: {uniq.tolist()}")
 
     H, W = mask.shape
-    rng = random.Random(seed)
+
 
     block_h = np.zeros((H + 1, max(W - 1, 0)), dtype=bool)
     block_v = np.zeros((max(H - 1, 0), W + 1), dtype=bool)

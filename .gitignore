@@ -53,6 +53,8 @@ cover/
 
 TestResults/
 TestImages/
+PNGImages/
+*.txt
 
 # Translations
 *.mo
