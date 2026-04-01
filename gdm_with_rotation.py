@@ -132,7 +132,7 @@ def find_best_rotation_batch(directory):
         f.close()
     
 if __name__ == "__main__":
-    #gdm_with_rotation(r'TestImages\simple.tif', angle=45, show_original=True, show_decomposed=True)
+    gdm_with_rotation(r'TestImages\ellipse_256.tif', angle=0, show_original=False, show_decomposed=True)
     #batch_process_images('TestImages', theta=45)
-    find_best_rotation(r'TestImages\joint_K3.tif')
+    #find_best_rotation(r'TestImages\joint_K3.tif')
     #find_best_rotation_batch('TestImages')

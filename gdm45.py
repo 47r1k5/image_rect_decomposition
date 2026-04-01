@@ -1,267 +1,688 @@
-from dataclasses import dataclass
-from PIL import Image
 import numpy as np
-import matplotlib.pylab as plt
+import matplotlib.pyplot as plt
+import networkx as nx
+from dataclasses import dataclass
 from matplotlib.patches import Polygon
-import random
-from collections import defaultdict
-from skimage.measure import label, regionprops
+from matplotlib.path import Path
+from collections import deque
+from PIL import Image
+import os
+from matplotlib.colors import hsv_to_rgb
 
 @dataclass(frozen=True)
 class Ray:
-    start: tuple[float, float]
-    end: tuple[float, float]
+    start: tuple[int, int]
+    end: tuple[int, int]
 
-def find_corners(binary_image):
-    obj0 = (binary_image == 0)
-    obj = np.pad(obj0, 1, mode="constant", constant_values=False)
+def inside_pixel(image: np.ndarray, r: int, c: int) -> bool:
+    h, w = image.shape
+    return 0 <= r < h and 0 <= c < w
 
-    H, W = obj.shape
+def get_pixel(image: np.ndarray, r: int, c: int, default: int = 0) -> int:
+    if inside_pixel(image, r, c):
+        return int(image[r, c])
+    return default
+
+def extract_boundary_segments(binary_image: np.ndarray):
+    img = (binary_image > 0).astype(np.uint8)
+    h, w = img.shape
+    segments = set()
+
+    for r in range(h):
+        for c in range(w):
+            if img[r, c] != 1:
+                continue
+
+            if r - 1 >= 0 and img[r - 1, c] == 0:
+                segments.add(((r, c), (r, c + 1)))
+
+            if r + 1 < h and img[r + 1, c] == 0:
+                segments.add(((r + 1, c), (r + 1, c + 1)))
+
+            if c - 1 >= 0 and img[r, c - 1] == 0:
+                segments.add(((r, c), (r + 1, c)))
+
+            if c + 1 < w and img[r, c + 1] == 0:
+                segments.add(((r, c + 1), (r + 1, c + 1)))
+
+    return sorted(segments)
+
+
+def build_boundary_graph(segments):
+    G = nx.Graph()
+    for a, b in segments:
+        G.add_edge(a, b)
+    return G
+
+def checkerboard_type_at_vertex(binary_image: np.ndarray, v: tuple[int, int]):
+    r, c = v
+    h, w = binary_image.shape
+
+    if not (1 <= r < h and 1 <= c < w):
+        return None
+
+    block = np.array([
+        [binary_image[r - 1, c - 1], binary_image[r - 1, c]],
+        [binary_image[r,     c - 1], binary_image[r,     c]],
+    ], dtype=np.uint8)
+
+    if np.array_equal(block, np.array([[0, 1], [1, 0]], dtype=np.uint8)):
+        return "01_10"
+
+    if np.array_equal(block, np.array([[1, 0], [0, 1]], dtype=np.uint8)):
+        return "10_01"
+
+    return None
+
+
+def is_corner_vertex(G: nx.Graph, v: tuple[int, int], binary_image: np.ndarray) -> bool:
+
+    deg = G.degree(v)
+
+    if deg == 2:
+        n1, n2 = list(G.neighbors(v))
+        d1 = (n1[0] - v[0], n1[1] - v[1])
+        d2 = (n2[0] - v[0], n2[1] - v[1])
+
+        if d1 == (-d2[0], -d2[1]):
+            return False
+
+        horiz1 = d1[0] == 0 and abs(d1[1]) == 1
+        vert1 = abs(d1[0]) == 1 and d1[1] == 0
+        horiz2 = d2[0] == 0 and abs(d2[1]) == 1
+        vert2 = abs(d2[0]) == 1 and d2[1] == 0
+
+        return (horiz1 and vert2) or (vert1 and horiz2)
+
+    if deg == 4:
+        return checkerboard_type_at_vertex(binary_image, v) is not None
+
+    return False
+
+
+def find_lattice_corners(binary_image: np.ndarray):
+    segments = extract_boundary_segments(binary_image)
+    boundary_graph = build_boundary_graph(segments)
+
     corners = []
     corners_NE = []
     corners_SW = []
     corners_triangle = []
 
-    for i in range(H - 1):
-        for j in range(W - 1):
-            block = obj[i:i+2, j:j+2]
-            s = int(block.sum())
+    # new special classes
+    corners_checker_01_10 = []
+    corners_checker_10_01 = []
 
-            if s == 3:
-                bi, bj = np.argwhere(~block)[0]
-                r, c = i + bi - 1, j + bj - 1 
-            elif s == 1:
-                oi, oj = np.argwhere(block)[0]
-                bi, bj = 1 - oi, 1 - oj
-                r, c = i + bi - 1, j + bj - 1
-            else:
-                continue
-
-            if 0 <= r < obj0.shape[0] and 0 <= c < obj0.shape[1]:
-                if binary_image[r, c] != 0:
-                    if binary_image[r-1, c+1]!=0:
-                        corners_NE.append((r, c))
-                    if binary_image[r+1, c-1]!=0:
-                        corners_SW.append((r, c))
-                    if (binary_image[r-1, c+1]==0) and (binary_image[r+1, c-1]==0):
-                        corners_triangle.append((r, c))
-                    corners.append((r, c))
-
-    corners = list(dict.fromkeys(corners))
-    return corners, corners_NE, corners_SW, corners_triangle
-
-def show_corners(image, corners):
-    plt.imshow(image, cmap='gray')
-    y_coords, x_coords = zip(*corners)
-    plt.scatter(x_coords, y_coords, c='red', s=10)
-    plt.title("Detected Vertices")
-    plt.axis("off")
-    plt.show()
-    
-def show_corners_classes(image, diff_corners):
-    plt.imshow(image, cmap='gray')
-    colors = ['red', 'blue', 'green']
-    i=0
-    for corner_class in diff_corners:
-        if(len(corner_class)==0):
+    for v in sorted(boundary_graph.nodes()):
+        if not is_corner_vertex(boundary_graph, v, binary_image):
             continue
-        y_coords, x_coords = zip(*corner_class)
-        plt.scatter(x_coords, y_coords, c=colors[i], s=10)
-        i+=1
-    plt.title("Detected NE Vertices")
-    plt.axis("off")
-    plt.show()
 
-def project_ray_diagonal(image, corners, di, dj):
-    H, W = image.shape
-    corner_set = set(corners)
+        r, c = v
+        checker_type = checkerboard_type_at_vertex(binary_image, v)
+
+        corners.append(v)
+        if checker_type == "01_10":
+            corners_checker_01_10.append(v)
+            corners_NE.append(v)
+            corners_SW.append(v)
+            continue
+
+        if checker_type == "10_01":
+            corners_checker_10_01.append(v)
+            continue
+
+        ne_ok = (get_pixel(binary_image, r - 1, c, 0) != 0)
+        sw_ok = (get_pixel(binary_image, r, c - 1, 0) != 0)
+
+        if ne_ok:
+            corners_NE.append(v)
+        if sw_ok:
+            corners_SW.append(v)
+        if (not ne_ok) and (not sw_ok):
+            corners_triangle.append(v)
+
+    return (
+        corners,
+        corners_NE,
+        corners_SW,
+        corners_triangle,
+        corners_checker_01_10,
+        corners_checker_10_01,
+        segments,
+        boundary_graph,
+    )
+
+def crossed_pixel_for_diagonal_step(v: tuple[int, int], di: int, dj: int):
+    r, c = v
+    nr, nc = r + di, c + dj
+    return min(r, nr), min(c, nc)
+
+
+def project_ray_diagonal(image, start_corners, all_corners, di, dj):
+    all_corner_set = set(all_corners)
     rays = []
 
-    for start in corners:
-        i, j = start
+    for start in start_corners:
+        current = start
+        moved = False
 
         while True:
-            ni, nj = i + di, j + dj
+            pr, pc = crossed_pixel_for_diagonal_step(current, di, dj)
 
-            if not (0 <= ni < H and 0 <= nj < W):
-                rays.append(Ray(start=start, end=(i, j)))
+            if get_pixel(image, pr, pc, 0) == 0:
+                if moved and current != start:
+                    rays.append(Ray(start=start, end=current))
                 break
 
-            if (ni, nj) in corner_set and (ni, nj) != start:
-                rays.append(Ray(start=start, end=(ni, nj)))
-                break
+            current = (current[0] + di, current[1] + dj)
+            moved = True
 
-            if image[ni, nj] == 0:
-                rays.append(Ray(start=start, end=(i, j)))
+            if current in all_corner_set and current != start:
+                rays.append(Ray(start=start, end=current))
                 break
-
-            i, j = ni, nj
 
     return rays
 
 
-def project_NE_ray(image, corners):
-    return project_ray_diagonal(image, corners, di=-1, dj=+1)
+def project_NE_ray(image, corners_NE, all_corners):
+    return project_ray_diagonal(image, corners_NE, all_corners, di=-1, dj=+1)
 
 
-def project_SW_ray(image, corners):
-    rays = project_ray_diagonal(image, corners, di=+1, dj=-1)
-    canonical_rays = [Ray(start=r.end, end=r.start) for r in rays]
-    return canonical_rays
+def project_SW_ray(image, corners_SW, all_corners):
+    rays = project_ray_diagonal(image, corners_SW, all_corners, di=+1, dj=-1)
+    return [Ray(start=r.end, end=r.start) for r in rays]
 
-def show_rays(image, rayNE_list,raySW_list):
-    plt.imshow(image, cmap='gray')
-    for ray in rayNE_list:
-        y_values = [ray.start[0], ray.end[0]]
-        x_values = [ray.start[1], ray.end[1]]
-        plt.plot(x_values, y_values, color='red')
-        
-    for ray in raySW_list:
-        y_values = [ray.start[0], ray.end[0]]
-        x_values = [ray.start[1], ray.end[1]]
-        plt.plot(x_values, y_values, color='blue')
-    plt.title("Projected Rays")
-    plt.axis("off")
-    plt.show()
 
-def unique_rays(ray_NE_list, ray_SW_list):
-    rays = ray_NE_list + ray_SW_list
-    return list(set(rays))
+def deduplicate_rays(rays):
+    seen = set()
+    unique = []
 
-def merge_rays_end_to_start(rays):
-    starts_at: dict[tuple[float, float], list[float]] = defaultdict(list)
-    for i, r in enumerate(rays):
-        starts_at[r.start].append(i)
+    for r in rays:
+        if r.start == r.end:
+            continue
+        key = tuple(sorted((r.start, r.end)))
+        if key not in seen:
+            seen.add(key)
+            unique.append(Ray(start=key[0], end=key[1]))
 
-    original_set = set(rays)
-    new_rays: set[Ray] = set()
+    return unique
 
-    n = len(rays)
+def build_selected_boundary_graph(boundary_graph: nx.Graph, selected_nodes):
+    selected_nodes = set(selected_nodes) & set(boundary_graph.nodes())
 
-    for i in range(n):
-        start = rays[i].start
-        first_end = rays[i].end
+    G = nx.Graph()
+    G.add_nodes_from(selected_nodes)
 
-        stack: list[tuple[tuple[float, float], set[float], bool]] = [(first_end, {i}, False)]
+    for u, v in boundary_graph.edges():
+        if u in selected_nodes and v in selected_nodes:
+            G.add_edge(u, v, kind="boundary")
 
-        while stack:
-            cur_end, used, extended = stack.pop()
+    H = boundary_graph.copy()
+    H.remove_nodes_from(selected_nodes)
 
-            next_idxs = [j for j in starts_at.get(cur_end, []) if j not in used]
+    ambiguous_components = []
 
-            if not next_idxs:
-                if extended and start != cur_end:
-                    candidate = Ray(start, cur_end)
-                    if candidate not in original_set:
-                        new_rays.add(candidate)
+    for comp in nx.connected_components(H):
+        touched = set()
+        for x in comp:
+            for nb in boundary_graph.neighbors(x):
+                if nb in selected_nodes:
+                    touched.add(nb)
+
+        if len(touched) == 2:
+            a, b = sorted(touched)
+            G.add_edge(a, b, kind="boundary")
+        elif len(touched) > 2:
+            ambiguous_components.append((set(comp), touched))
+
+    return G, ambiguous_components
+
+
+def add_ray_edges(G: nx.Graph, rays):
+    for ray in rays:
+        if ray.start in G.nodes and ray.end in G.nodes and ray.start != ray.end:
+            if G.has_edge(ray.start, ray.end):
+                old_kind = G[ray.start][ray.end].get("kind", "")
+                if old_kind != "ray":
+                    G[ray.start][ray.end]["kind"] = "boundary+ray"
+            else:
+                G.add_edge(ray.start, ray.end, kind="ray")
+
+
+def graph_to_adjacency_matrix(G: nx.Graph):
+    nodes = sorted(G.nodes())
+    idx = {node: i for i, node in enumerate(nodes)}
+
+    n = len(nodes)
+    A = np.zeros((n, n), dtype=np.uint8)
+
+    for u, v in G.edges():
+        i = idx[u]
+        j = idx[v]
+        A[i, j] = 1
+        A[j, i] = 1
+
+    return nodes, A
+
+def get_neighbors(r, c, h, w, connectivity=4):
+    if connectivity == 4:
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    elif connectivity == 8:
+        directions = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1),
+        ]
+    else:
+        raise ValueError("connectivity must be 4 or 8")
+
+    for dr, dc in directions:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < h and 0 <= cc < w:
+            yield rr, cc
+
+
+def find_holes(binary_image, connectivity=4):
+    img = (binary_image > 0).astype(np.uint8)
+    h, w = img.shape
+
+    visited = np.zeros((h, w), dtype=bool)
+    hole_label_image = np.zeros((h, w), dtype=int)
+    holes = []
+    hole_id = 0
+
+    for r in range(h):
+        for c in range(w):
+            if img[r, c] != 0 or visited[r, c]:
                 continue
 
-            for j in next_idxs:
-                used2 = set(used)
-                used2.add(j)
-                stack.append((rays[j].end, used2, True))
+            q = deque([(r, c)])
+            visited[r, c] = True
+            component = []
+            touches_border = False
 
-    rays.extend(sorted(new_rays, key=lambda r: (r.start, r.end)))
-    return rays
+            while q:
+                x, y = q.popleft()
+                component.append((x, y))
 
-def find_polygons(binary_image,rays_list, corners_triangle):
-    polygons_list = []
-    rays_ordered = []
-    corner_rays=[]
-    
-    for r in rays_list:
-        mid_point = ((r.start[0] + r.end[0]) / 2, (r.start[1] + r.end[1]) / 2)
-        col = mid_point[1] + mid_point[0]
-        row = mid_point[1] - mid_point[0]
-        rays_ordered.append((col, row, r))
-        
-    rays_ordered.sort(key=lambda x: (x[0],x[1]))
-    rays_ordered = [r[2] for r in rays_ordered]
-    
-    for ray in rays_ordered:
-        print(f"Ray from {ray.start} to {ray.end}")
-    
-    for c in corners_triangle:
-        cx, cy = c
-        print(f"Finding ray for corner {c}")
-        closest_ray = None
-        possible_rays = []
-        
-        for l in rays_ordered:
-            lx1, ly1 = l.start
-            lx2, ly2 = l.end
-            if (ly1 == cy and  lx2 == cx) or (lx1 == cx and ly2 == cy):
-                possible_rays.append(l)
-                print(f"Possible ray for corner {c}: from {l.start} to {l.end}")
-                
-        min_dist= 10000000        
-        for l in possible_rays:
-            lx1, ly1 = l.start
-            lx2, ly2 = l.end
+                if x == 0 or x == h - 1 or y == 0 or y == w - 1:
+                    touches_border = True
 
-            dist = abs(lx1 - cx) + abs(ly2 - cy) + abs(lx2 - cx) + abs(ly1 - cy)
-            if dist<min_dist:
-                min_dist=dist
-                closest_ray=l
-        
-        if closest_ray is not None:
-            corner_rays.append(closest_ray)
-            x = [closest_ray.start[0], closest_ray.end[0], cx]
-            y = [closest_ray.start[1], closest_ray.end[1], cy]
-            print(f"Closest ray for corner {c}: from {closest_ray.start} to {closest_ray.end}\n")
-            polygons_list.append(list(zip(y, x)))
-    
-    for i in range(0,len(rays_ordered)):
-        l = rays_ordered[i]
-        lx1, ly1 = l.start
-        lx2, ly2 = l.end
-        for j in range(i+1,len(rays_ordered)):
-            k = rays_ordered[j]
-            kx1, ky1 = k.start
-            kx2, ky2 = k.end
-            if ((lx2 == kx2 and ly1 == ky1) or (lx1 == kx1 and ly2 == ky2) or\
-                (lx1 == kx1 and lx2 == kx2) or (ly1 == ky1 and ly2 == ky2)):
-                x = [lx1, lx2, kx2, kx1]
-                y = [ly1, ly2, ky2, ky1]
-                polygons_list.append(list(zip(y, x)))
-                break              
+                for xx, yy in get_neighbors(x, y, h, w, connectivity):
+                    if img[xx, yy] == 0 and not visited[xx, yy]:
+                        visited[xx, yy] = True
+                        q.append((xx, yy))
 
-    return polygons_list
+            if not touches_border:
+                hole_id += 1
 
-def show_polygons(image, polygons, rays):
-    plt.imshow(image, cmap='gray',origin="upper")
-    
-    ax = plt.gca()
+                rows = [p[0] for p in component]
+                cols = [p[1] for p in component]
 
-    colors = [
-        (255, 0, 0),  # Red
-        (0, 255, 0),  # Green
-        (0, 0, 255),  # Blue
-        (255, 255, 0),  # Yellow
-        (255, 0, 255),  # Magenta
-        (0, 255, 255),  # Cyan
+                mask = np.zeros((h, w), dtype=bool)
+                for x, y in component:
+                    mask[x, y] = True
+                    hole_label_image[x, y] = hole_id
+
+                holes.append({
+                    "id": hole_id,
+                    "pixels": component,
+                    "mask": mask,
+                    "bbox": (min(rows), max(rows), min(cols), max(cols)),
+                    "centroid": (float(np.mean(rows)), float(np.mean(cols))),
+                    "area": len(component),
+                })
+
+    return holes, hole_label_image
+
+def canonical_cycle_nodes(cycle):
+    cycle = list(cycle)
+    n = len(cycle)
+
+    if n == 0:
+        return tuple()
+
+    reps = []
+    for seq in (cycle, cycle[::-1]):
+        for k in range(n):
+            reps.append(tuple(seq[k:] + seq[:k]))
+
+    return min(reps)
+
+
+def polygon_signed_area(face):
+    pts = [(c, r) for (r, c) in face]
+    area = 0.0
+    n = len(pts)
+
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        area += x1 * y2 - x2 * y1
+
+    return 0.5 * area
+
+
+def extract_bounded_faces(G: nx.Graph):
+    is_planar, embedding = nx.check_planarity(G)
+    if not is_planar:
+        raise ValueError("The augmented graph is not planar.")
+
+    visited_half_edges = set()
+    all_faces = []
+
+    for u in embedding.nodes():
+        for v in embedding.neighbors_cw_order(u):
+            if (u, v) in visited_half_edges:
+                continue
+
+            face = embedding.traverse_face(u, v, mark_half_edges=visited_half_edges)
+
+            if len(face) >= 3:
+                all_faces.append(face)
+
+    unique_faces = {}
+    for face in all_faces:
+        key = canonical_cycle_nodes(face)
+        unique_faces[key] = list(key)
+
+    faces = list(unique_faces.values())
+
+    if not faces:
+        return [], []
+
+    outer_face = max(faces, key=lambda f: abs(polygon_signed_area(f)))
+    outer_key = canonical_cycle_nodes(outer_face)
+
+    bounded_faces = [
+        face for face in faces
+        if canonical_cycle_nodes(face) != outer_key
     ]
-    
-    for poly in polygons:
-        color = (random.random(), random.random(), random.random())
-        patch = Polygon(poly, closed=True, fill=True, facecolor=color)
-        ax.add_patch(patch)
-    
+
+    return bounded_faces, outer_face
+
+def face_contains_hole(face, holes):
+    """
+    A face is treated as a hole-face if it contains the center of
+    at least one hole pixel component.
+    """
+    verts = np.array([(c, r) for (r, c) in face], dtype=float)
+    path = Path(verts, closed=True)
+
+    for hole in holes:
+        r, c = hole["pixels"][0]
+        pt = (c + 0.5, r + 0.5)
+
+        if path.contains_point(pt):
+            return True
+
+    return False
+
+
+def remove_hole_faces(faces, holes):
+    kept_faces = []
+    removed_faces = []
+
+    for face in faces:
+        if face_contains_hole(face, holes):
+            removed_faces.append(face)
+        else:
+            kept_faces.append(face)
+
+    return kept_faces, removed_faces
+
+
+def build_augmented_lattice_graph(binary_image: np.ndarray):
+    binary_image = (binary_image > 0).astype(np.uint8)
+
+    corners, corners_NE, corners_SW, corners_triangle, corners_checker_01_10, corners_checker_10_01, segments, boundary_graph = (
+        find_lattice_corners(binary_image)
+    )
+
+    rays_NE = project_NE_ray(binary_image, corners_NE, corners)
+    rays_SW = project_SW_ray(binary_image, corners_SW, corners)
+    rays = deduplicate_rays(rays_NE + rays_SW)
+
+    selected_nodes = set(corners)
     for ray in rays:
-        y_values = [ray.start[0], ray.end[0]]
-        x_values = [ray.start[1], ray.end[1]]
-        plt.plot(x_values, y_values, color='red')
-    
-    plt.title("Detected Quadliterals")
-    plt.axis("off")
+        if ray.start in boundary_graph.nodes():
+            selected_nodes.add(ray.start)
+        if ray.end in boundary_graph.nodes():
+            selected_nodes.add(ray.end)
+
+    G, ambiguous_components = build_selected_boundary_graph(
+        boundary_graph, selected_nodes
+    )
+    add_ray_edges(G, rays)
+
+    nodes, A = graph_to_adjacency_matrix(G)
+    node_to_idx = {node: i for i, node in enumerate(nodes)}
+
+    holes, hole_label_image = find_holes(binary_image, connectivity=4)
+
+    faces, outer_face = extract_bounded_faces(G)
+    faces, removed_hole_faces = remove_hole_faces(faces, holes)
+
+    cycles_info = [
+        {
+            "start": face[0],
+            "cycle": face,
+            "source": "face",
+        }
+        for face in faces
+    ]
+
+    info = {
+        "segments": segments,
+        "boundary_graph": boundary_graph,
+        "corners": corners,
+        "corners_NE": corners_NE,
+        "corners_SW": corners_SW,
+        "corners_triangle": corners_triangle,
+        "corners_checker_01_10": corners_checker_01_10,
+        "corners_checker_10_01": corners_checker_10_01,
+        "rays": rays,
+        "ambiguous_components": ambiguous_components,
+        "holes": holes,
+        "hole_label_image": hole_label_image,
+        "removed_hole_faces": removed_hole_faces,
+        "cycles_info": cycles_info,
+        "outer_face": outer_face,
+        "used": [],
+        "potential": [],
+        "node_to_idx": node_to_idx,
+        "used_idx": [],
+        "potential_idx": [],
+        "cycles_info_idx": [
+            {
+                "start": node_to_idx[item["start"]],
+                "cycle": [node_to_idx[x] for x in item["cycle"] if x in node_to_idx],
+                "source": item["source"],
+            }
+            for item in cycles_info
+            if item["start"] in node_to_idx
+        ],
+    }
+
+    return nodes, A, G, info
+
+def draw_graph_edges(ax, G, alpha=1.0):
+    for u, v, data in G.edges(data=True):
+        kind = data.get("kind", "")
+        x = [u[1] - 0.5, v[1] - 0.5]
+        y = [u[0] - 0.5, v[0] - 0.5]
+
+        if kind == "ray":
+            ax.plot(x, y, linestyle="--", linewidth=2, alpha=alpha)
+        elif kind == "boundary+ray":
+            ax.plot(x, y, linewidth=3, alpha=alpha)
+        else:
+            ax.plot(x, y, linewidth=2, alpha=alpha)
+
+
+def visualize_corner_classes(binary_image, info):
+    fig = plt.figure("Corner classes", figsize=(8, 8))
+    ax = fig.add_subplot(111)
+
+    ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
+
+    if info["corners"]:
+        ys = [p[0] - 0.5 for p in info["corners"]]
+        xs = [p[1] - 0.5 for p in info["corners"]]
+        ax.scatter(xs, ys, s=35, c="red", label="corners")
+
+    if info["corners_NE"]:
+        ys = [p[0] - 0.5 for p in info["corners_NE"]]
+        xs = [p[1] - 0.5 for p in info["corners_NE"]]
+        ax.scatter(xs, ys, s=55, c="blue", label="NE")
+
+    if info["corners_SW"]:
+        ys = [p[0] - 0.5 for p in info["corners_SW"]]
+        xs = [p[1] - 0.5 for p in info["corners_SW"]]
+        ax.scatter(xs, ys, s=55, c="green", label="SW")
+
+    if info["corners_triangle"]:
+        ys = [p[0] - 0.5 for p in info["corners_triangle"]]
+        xs = [p[1] - 0.5 for p in info["corners_triangle"]]
+        ax.scatter(xs, ys, s=70, c="orange", marker="s", label="triangle corners")
+
+    ax.set_title("Lattice corners and classes")
+    ax.set_axis_off()
+    ax.legend()
+    plt.tight_layout()
+
+
+def visualize_augmented_graph(binary_image, nodes, G, info, show_labels=True):
+    fig = plt.figure("Augmented graph", figsize=(8, 8))
+    ax = fig.add_subplot(111)
+
+    ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
+    draw_graph_edges(ax, G)
+
+    if nodes:
+        ys = [p[0] - 0.5 for p in nodes]
+        xs = [p[1] - 0.5 for p in nodes]
+        ax.scatter(xs, ys, s=40, c="red", label="graph nodes")
+
+    if show_labels:
+        for i, (r, c) in enumerate(nodes):
+            ax.text(c - 0.35, r - 0.35, str(i), fontsize=8)
+
+    ax.set_title("Augmented graph projected onto object")
+    ax.set_axis_off()
+    ax.legend()
+    plt.tight_layout()
+
+
+def visualize_holes(binary_image, info):
+    fig = plt.figure("Holes", figsize=(8, 8))
+    ax = fig.add_subplot(111)
+
+    ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
+
+    for hole in info["holes"]:
+        ys = [p[0] for p in hole["pixels"]]
+        xs = [p[1] for p in hole["pixels"]]
+        ax.scatter(xs, ys, s=8, label=f'hole {hole["id"]}')
+
+    ax.set_title("Detected holes")
+    ax.set_axis_off()
+    if info["holes"]:
+        ax.legend()
+    plt.tight_layout()
+
+
+def visualize_cycles(binary_image, info, seed=None):
+    rng = np.random.default_rng(seed)
+
+    fig = plt.figure("Polygons after removing holes", figsize=(8, 8))
+    ax = fig.add_subplot(111)
+
+    ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
+
+    if info["cycles_info"]:
+        for item in info["cycles_info"]:
+            cycle = item["cycle"]
+
+            if len(cycle) >= 3:
+                pts = np.array([(p[1] - 0.5, p[0] - 0.5) for p in cycle], dtype=float)
+                color = rng.random(3)
+                h = rng.random()
+                s = rng.uniform(0.75, 1.0)   # high saturation -> not pale
+                v = rng.uniform(0.35, 0.85)  # avoid near-white
+                color = hsv_to_rgb([h, s, v])
+                    
+                poly = Polygon(
+                    pts,
+                    closed=True,
+                    facecolor=color,
+                    edgecolor="none",
+                    linewidth=0                
+                    )
+                ax.add_patch(poly)
+
+    ax.set_title("Kept polygons")
+    ax.set_axis_off()
+    plt.tight_layout()
+
+
+def visualize_removed_hole_faces(binary_image, info):
+    fig = plt.figure("Removed hole-polygons", figsize=(8, 8))
+    ax = fig.add_subplot(111)
+
+    ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
+
+    for face in info["removed_hole_faces"]:
+        pts = np.array([(p[1] - 0.5, p[0] - 0.5) for p in face], dtype=float)
+        poly = Polygon(
+            pts,
+            closed=True,
+            facecolor="red",
+            edgecolor="none",
+            linewidth=0,
+            alpha=0.5,
+        )
+        ax.add_patch(poly)
+
+    ax.set_title("Faces removed because they are holes")
+    ax.set_axis_off()
+    plt.tight_layout()
+
+
+def visualize_everything_separate(
+    binary_image, nodes, A, G, info, show_labels=False, seed=None
+):
+    visualize_corner_classes(binary_image, info)
+    visualize_augmented_graph(binary_image, nodes, G, info, show_labels=show_labels)
+    visualize_holes(binary_image, info)
+    visualize_cycles(binary_image, info, seed=seed)
     plt.show()
 
-def show_image(image):
-    plt.imshow(image, cmap='gray')
-    plt.title("Image")
-    plt.axis("off")
-    plt.show()
-    
+def single_image_decomp(binary_image):
+    try:
+        nodes, A, G, info = build_augmented_lattice_graph(binary_image)
+        
+        print("Number of polygons:", len(info["cycles_info"]))
+        for i, item in enumerate(info["cycles_info"]):
+            print(f'Polygon {i} nodes: {item["cycle"]}')
+    except Exception as e:
+        print(f"Error processing image: {e}")
+
+    visualize_everything_separate(binary_image, nodes, A, G, info, seed=42)
+
+def batch_process_images(directory):
+    try:
+        for file_name in os.listdir(directory):
+            full_path = os.path.join(directory, file_name)
+            if file_name.endswith(".tif"):
+                print(f"Processing {file_name}...")
+                
+                image = Image.open(full_path)
+                array_image = np.array(image)
+                binary_image = np.array(array_image).astype(bool).astype(int)
+                single_image_decomp(binary_image)
+    except Exception as e:
+        print(f"Error processing images in directory: {e}")
+
 def triangle_matrix(M,h=64, w=64, apex_row=8, apex_col=None, height=40, base_width=40):
     if apex_col is None:
         apex_col = w // 2
@@ -282,81 +703,49 @@ def triangle_matrix(M,h=64, w=64, apex_row=8, apex_col=None, height=40, base_wid
 
     return M
 
-def circle_matrix(M,h=64, w=64, center=None, radius=18):
-    if center is None:
-        cy, cx = h // 2, w // 2
-    else:
-        cy, cx = center
-
-    y, x = np.ogrid[:h, :w]
-    mask = (x - cx)**2 + (y - cy)**2 <= radius**2
-    M[mask] = 1
-    return M
-
-def GDM45_decomp(file_name):
+if __name__ == "__main__":
+    """
+    #Test 1: 
+    binary_image = np.zeros((300, 300), dtype=np.uint8)
+    binary_image[53:179, 28:229] = 1
+    binary_image[3:54, 78:129] = 1
+    binary_image[3:54, 178:229] = 1
+    binary_image[178:279, 78:129] = 1
+    binary_image[228:279, 28:179] = 1
+    binary_image[103:154, 228:254] = 1
+    binary_image[103:129, 253:279] = 1
+    binary_image[64:128, 64:128] = 1
+    """
+    
+    """
+    #Test 2:
+    binary_image = np.zeros((300, 300), dtype=np.uint8)
+    binary_image[50:250, 50:250] = 1
+    binary_image[100:200, 100:200] = 0
+    binary_image[100:130, 100:130] = 1
+    binary_image[170:200, 100:130] = 1
+    binary_image[170:200, 170:200] = 1
+    binary_image[100:130, 170:200] = 1
+    """
+    
+    """
+    #Triangle test:
+    binary_image = np.zeros((100, 100), dtype=np.uint8)
+    binary_image = triangle_matrix(binary_image, h=100,w=100, apex_row=30, height=64, base_width=64)
+    binary_image[70:80, 45:55] = 0
+    """
+    
+    """
+    #Running on actual image:
+    file_name = "TestImages/joint_K7.tif"
     image = Image.open(file_name)
     array_image = np.array(image)
     binary_image = np.array(array_image).astype(bool).astype(int)
-
-    #binary_image = np.full((300,300),0, dtype=int)
-    #Square
-    #binary_image[64:192, 64:192] = 1
-    #Rectanle 1
-    #binary_image[64:192, 40:192] = 1
-    #Random shape
-    """binary_image[64:192, 40:192] = 1
-    binary_image[40:70, 40:100] = 1
-    binary_image[40:80, 150:180] = 1
-    binary_image[170:225, 40:100] = 1
-    binary_image[170:225, 150:180] = 0
     """
-    #Random shape
-    """binary_image[53:178, 28:228] = 1
-    binary_image[3:53, 78:128] = 1
-    binary_image[3:53, 178:228] = 1
-    binary_image[178:278, 78:128] = 1
-    binary_image[228:278, 28:178] = 1
-    binary_image[103:153, 228:253] = 1
-    binary_image[103:128, 253:278] = 1
-    """
-    """
-    binary_image = np.full((100,100),0, dtype=int)
-    binary_image = triangle_matrix(binary_image, h=100,w=100, apex_row=30, height=64, base_width=64)
-    """
-    #binary_image = circle_matrix(binary_image, h=100,w=100, center=(50,50), radius=30)
-
-    obj = (binary_image == 1)
     
-    L = label(obj, connectivity=2)
+    #single_image_decomp(binary_image)
     
-    masks = [(L == k).astype(np.uint8) for k in range(1, L.max() + 1)]
-    polygons_list = []
-    for mask in masks:
-        corners, corners_NE, corners_SW, corners_triangle = find_corners(mask)
-        ray_NE_list = project_NE_ray(mask, corners_NE)
-        ray_SW_list = project_SW_ray(mask, corners_SW)
-        unique_rays_list = unique_rays(ray_NE_list, ray_SW_list)
-        merged_rays_list = merge_rays_end_to_start(unique_rays_list)
-        polygons=find_polygons(mask,merged_rays_list, corners_triangle)
-
-        polygons_list += polygons
-        """show_corners(mask, corners)
-        show_corners_classes(mask, [corners_NE, corners_SW, corners_triangle]) 
-        show_rays(mask, ray_NE_list, ray_SW_list)
-        show_rays(mask, unique_rays_list, [])
-        show_rays(mask, merged_rays_list, [])
-        show_polygons(mask, polygons, [])"""
-    show_polygons(binary_image, polygons_list, [])
-    print(f"Number of polygons: {len(polygons_list)}")
-
-file_name="TestImages/ellipse_256.tif" #189
-#file_name="TestImages/6_circle.tif"
-#file_name="TestImages/test00_x.tif"
-#file_name="TestImages/simple.tif"
-#file_name="TestImages/turbine.tif"
-
-
-
-GDM45_decomp(file_name)
-
-
+    """
+    directory = "TestImages"
+    batch_process_images(directory)
+    """

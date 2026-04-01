@@ -55,6 +55,9 @@ TestResults/
 TestImages/
 PNGImages/
 *.txt
+*.tif
+vlami.py
+test.py
 
 # Translations
 *.mo
