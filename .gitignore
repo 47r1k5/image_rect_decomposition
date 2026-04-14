@@ -54,6 +54,8 @@ cover/
 TestResults/
 TestImages/
 PNGImages/
+Results/
+Results45/
 *.txt
 *.tif
 vlami.py

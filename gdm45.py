@@ -281,6 +281,246 @@ def get_neighbors(r, c, h, w, connectivity=4):
             yield rr, cc
 
 
+def adjacency_neighbors(A: np.ndarray, u: int):
+    return [v for v, connected in enumerate(A[u]) if connected]
+
+
+def bfs_shortest_path_excluding(A: np.ndarray, source: int, target: int, forbidden=None):
+    if source == target:
+        return [source]
+
+    n = A.shape[0]
+    forbidden = set() if forbidden is None else set(forbidden)
+
+    if source in forbidden or target in forbidden:
+        return None
+
+    parent = [-1] * n
+    visited = np.zeros(n, dtype=bool)
+    q = deque([source])
+    visited[source] = True
+
+    while q:
+        u = q.popleft()
+
+        for v in adjacency_neighbors(A, u):
+            if v in forbidden or visited[v]:
+                continue
+
+            visited[v] = True
+            parent[v] = u
+
+            if v == target:
+                path = [v]
+                cur = v
+                while parent[cur] != -1:
+                    cur = parent[cur]
+                    path.append(cur)
+                path.reverse()
+                return path
+
+            q.append(v)
+
+    return None
+
+
+def bfs_shortest_path_without_edge(A: np.ndarray, source: int, target: int, banned_edge):
+    banned_edge = tuple(sorted(banned_edge))
+
+    n = A.shape[0]
+    parent = [-1] * n
+    visited = np.zeros(n, dtype=bool)
+    q = deque([source])
+    visited[source] = True
+
+    while q:
+        u = q.popleft()
+
+        for v in adjacency_neighbors(A, u):
+            if tuple(sorted((u, v))) == banned_edge:
+                continue
+
+            if visited[v]:
+                continue
+
+            visited[v] = True
+            parent[v] = u
+
+            if v == target:
+                path = [v]
+                cur = v
+                while parent[cur] != -1:
+                    cur = parent[cur]
+                    path.append(cur)
+                path.reverse()
+                return path
+
+            q.append(v)
+
+    return None
+
+
+def canonical_cycle_indices(cycle):
+    cycle = list(cycle)
+    n = len(cycle)
+
+    if n == 0:
+        return tuple()
+
+    reps = []
+    for seq in (cycle, cycle[::-1]):
+        for k in range(n):
+            reps.append(tuple(seq[k:] + seq[:k]))
+
+    return min(reps)
+
+
+def is_valid_cycle_indices(A: np.ndarray, cycle):
+    if len(cycle) < 3:
+        return False
+
+    if len(set(cycle)) != len(cycle):
+        return False
+
+    m = len(cycle)
+    for i in range(m):
+        u = cycle[i]
+        v = cycle[(i + 1) % m]
+        if A[u, v] == 0:
+            return False
+
+    return True
+
+
+def is_chordless_cycle_graph(G: nx.Graph, cycle):
+    m = len(cycle)
+    if m < 3:
+        return False
+
+    boundary_edges = {
+        tuple(sorted((cycle[i], cycle[(i + 1) % m])))
+        for i in range(m)
+    }
+
+    for i in range(m):
+        for j in range(i + 1, m):
+            u = cycle[i]
+            v = cycle[j]
+
+            if not G.has_edge(u, v):
+                continue
+
+            edge = tuple(sorted((u, v)))
+            if edge not in boundary_edges:
+                return False
+
+    return True
+
+
+def shortest_cycles_through_start(A: np.ndarray, start: int):
+    nbrs = adjacency_neighbors(A, start)
+    if len(nbrs) < 2:
+        return []
+
+    best_len = None
+    best_cycles = set()
+
+    for i in range(len(nbrs)):
+        for j in range(i + 1, len(nbrs)):
+            u = nbrs[i]
+            v = nbrs[j]
+
+            path = bfs_shortest_path_excluding(A, u, v, forbidden={start})
+            if path is None:
+                continue
+
+            cycle = [start] + path
+
+            if not is_valid_cycle_indices(A, cycle):
+                continue
+
+            key = canonical_cycle_indices(cycle)
+            L = len(key)
+
+            if best_len is None or L < best_len:
+                best_len = L
+                best_cycles = {key}
+            elif L == best_len:
+                best_cycles.add(key)
+
+    return [list(c) for c in sorted(best_cycles)]
+
+
+def find_minimal_cycles_bfs(A: np.ndarray, triangle_start_indices=None):
+    n = A.shape[0]
+    triangle_start_indices = [] if triangle_start_indices is None else list(triangle_start_indices)
+
+    triangle_start_indices = sorted(set(
+        idx for idx in triangle_start_indices
+        if 0 <= idx < n
+    ))
+
+    cycle_map = {}
+    processed_starts = set()
+    used_starts = []
+    potential_starts = set()
+
+    def process_start(s):
+        if s in processed_starts:
+            return
+
+        processed_starts.add(s)
+        cycles = shortest_cycles_through_start(A, s)
+
+        if not cycles:
+            return
+
+        used_starts.append(s)
+
+        for cycle in cycles:
+            key = canonical_cycle_indices(cycle)
+            cycle_map[key] = list(key)
+
+            for node in cycle:
+                for nb in adjacency_neighbors(A, node):
+                    if nb not in processed_starts and nb not in triangle_start_indices:
+                        potential_starts.add(nb)
+
+    for s in triangle_start_indices:
+        process_start(s)
+
+    for s in sorted(potential_starts):
+        process_start(s)
+
+    for s in range(n):
+        process_start(s)
+
+    cycles = [cycle_map[k] for k in sorted(cycle_map.keys(), key=lambda x: (len(x), x))]
+    return cycles, used_starts, sorted(potential_starts)
+
+
+def find_edge_minimal_cycles_bfs(A: np.ndarray):
+    n = A.shape[0]
+    cycle_map = {}
+
+    for u in range(n):
+        for v in range(u + 1, n):
+            if A[u, v] == 0:
+                continue
+
+            path = bfs_shortest_path_without_edge(A, u, v, banned_edge=(u, v))
+            if path is None:
+                continue
+
+            if not is_valid_cycle_indices(A, path):
+                continue
+
+            key = canonical_cycle_indices(path)
+            cycle_map[key] = list(key)
+
+    return [cycle_map[k] for k in sorted(cycle_map.keys(), key=lambda x: (len(x), x))]
+
+
 def find_holes(binary_image, connectivity=4):
     img = (binary_image > 0).astype(np.uint8)
     h, w = img.shape
@@ -401,22 +641,22 @@ def extract_bounded_faces(G: nx.Graph):
     return bounded_faces, outer_face
 
 def face_contains_hole(face, holes):
-    """
-    A face is treated as a hole-face if it contains the center of
-    at least one hole pixel component.
-    """
     verts = np.array([(c, r) for (r, c) in face], dtype=float)
     path = Path(verts, closed=True)
 
     for hole in holes:
-        r, c = hole["pixels"][0]
-        pt = (c + 0.5, r + 0.5)
+        cr, cc = hole["centroid"]
+        centroid_pt = (cc + 0.5, cr + 0.5)
 
-        if path.contains_point(pt):
+        if path.contains_point(centroid_pt, radius=1e-9):
             return True
 
-    return False
+        for r, c in hole["pixels"]:
+            pt = (c + 0.5, r + 0.5)
+            if path.contains_point(pt, radius=1e-9):
+                return True
 
+    return False
 
 def remove_hole_faces(faces, holes):
     kept_faces = []
@@ -429,6 +669,69 @@ def remove_hole_faces(faces, holes):
             kept_faces.append(face)
 
     return kept_faces, removed_faces
+
+
+def remove_hole_cycles(cycles, holes):
+    kept_cycles = []
+    removed_cycles = []
+
+    for cycle in cycles:
+        if face_contains_hole(cycle, holes):
+            removed_cycles.append(cycle)
+        else:
+            kept_cycles.append(cycle)
+
+    return kept_cycles, removed_cycles
+
+
+def extract_hole_boundary_segments(binary_image: np.ndarray, hole):
+    img = (binary_image > 0).astype(np.uint8)
+    h, w = img.shape
+    segments = set()
+
+    for r, c in hole["pixels"]:
+        if r - 1 >= 0 and img[r - 1, c] == 1:
+            segments.add(((r, c), (r, c + 1)))
+
+        if r + 1 < h and img[r + 1, c] == 1:
+            segments.add(((r + 1, c), (r + 1, c + 1)))
+
+        if c - 1 >= 0 and img[r, c - 1] == 1:
+            segments.add(((r, c), (r + 1, c)))
+
+        if c + 1 < w and img[r, c + 1] == 1:
+            segments.add(((r, c + 1), (r + 1, c + 1)))
+
+    return sorted(segments)
+
+
+def find_hole_boundary_cycles(binary_image: np.ndarray, holes):
+    cycles = []
+
+    for hole in holes:
+        segments = extract_hole_boundary_segments(binary_image, hole)
+        if not segments:
+            cycles.append([])
+            continue
+
+        H = nx.Graph()
+        for a, b in segments:
+            H.add_edge(a, b)
+
+        hole_cycles = []
+        seen = set()
+        for cycle in nx.cycle_basis(H):
+            if len(cycle) < 3:
+                continue
+
+            key = canonical_cycle_nodes(cycle)
+            if key not in seen:
+                seen.add(key)
+                hole_cycles.append(list(key))
+
+        cycles.append(hole_cycles)
+
+    return cycles
 
 
 def build_augmented_lattice_graph(binary_image: np.ndarray):
@@ -459,17 +762,68 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
 
     holes, hole_label_image = find_holes(binary_image, connectivity=4)
 
-    faces, outer_face = extract_bounded_faces(G)
-    faces, removed_hole_faces = remove_hole_faces(faces, holes)
+    triangle_start_indices = [
+        node_to_idx[v]
+        for v in corners_triangle
+        if v in node_to_idx
+    ]
+
+    triangle_seed_cycles_idx, used_idx, potential_idx = find_minimal_cycles_bfs(
+        A,
+        triangle_start_indices=triangle_start_indices,
+    )
+    edge_cycles_idx = find_edge_minimal_cycles_bfs(A)
+
+    cycle_idx_map = {}
+    for cycle_idx in triangle_seed_cycles_idx + edge_cycles_idx:
+        if len(cycle_idx) < 3:
+            continue
+        key = canonical_cycle_indices(cycle_idx)
+        cycle_idx_map[key] = list(key)
+
+    kept_cycles = []
+    for cycle_idx in sorted(cycle_idx_map.keys(), key=lambda x: (len(x), x)):
+        cycle_nodes = [nodes[i] for i in cycle_idx]
+
+        if not is_chordless_cycle_graph(G, cycle_nodes):
+            continue
+
+        kept_cycles.append(cycle_nodes)
+
+    kept_cycles, removed_hole_faces = remove_hole_cycles(kept_cycles, holes)
+
+    hole_boundary_cycles_per_hole = find_hole_boundary_cycles(binary_image, holes)
+    existing_removed = {canonical_cycle_nodes(cycle) for cycle in removed_hole_faces}
+
+    for hole, hole_cycles in zip(holes, hole_boundary_cycles_per_hole):
+        already_removed = any(face_contains_hole(cycle, [hole]) for cycle in removed_hole_faces)
+        if already_removed:
+            continue
+
+        for cycle in hole_cycles:
+            key = canonical_cycle_nodes(cycle)
+            if key not in existing_removed:
+                removed_hole_faces.append(cycle)
+                existing_removed.add(key)
 
     cycles_info = [
         {
-            "start": face[0],
-            "cycle": face,
-            "source": "face",
+            "start": cycle[0],
+            "cycle": cycle,
+            "source": "bfs",
         }
-        for face in faces
+        for cycle in kept_cycles
     ]
+
+    cycles_info_idx = []
+    for cycle in kept_cycles:
+        if all(node in node_to_idx for node in cycle):
+            cycle_idx = [node_to_idx[node] for node in cycle]
+            cycles_info_idx.append({
+                "start": cycle_idx[0],
+                "cycle": cycle_idx,
+                "source": "bfs",
+            })
 
     info = {
         "segments": segments,
@@ -486,21 +840,13 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
         "hole_label_image": hole_label_image,
         "removed_hole_faces": removed_hole_faces,
         "cycles_info": cycles_info,
-        "outer_face": outer_face,
-        "used": [],
-        "potential": [],
+        "outer_face": [],
+        "used": [nodes[i] for i in used_idx if 0 <= i < len(nodes)],
+        "potential": [nodes[i] for i in potential_idx if 0 <= i < len(nodes)],
         "node_to_idx": node_to_idx,
-        "used_idx": [],
-        "potential_idx": [],
-        "cycles_info_idx": [
-            {
-                "start": node_to_idx[item["start"]],
-                "cycle": [node_to_idx[x] for x in item["cycle"] if x in node_to_idx],
-                "source": item["source"],
-            }
-            for item in cycles_info
-            if item["start"] in node_to_idx
-        ],
+        "used_idx": used_idx,
+        "potential_idx": potential_idx,
+        "cycles_info_idx": cycles_info_idx,
     }
 
     return nodes, A, G, info
@@ -591,38 +937,56 @@ def visualize_holes(binary_image, info):
     plt.tight_layout()
 
 
-def visualize_cycles(binary_image, info, seed=None):
+def visualize_cycles(file_name, binary_image, info, seed=None):
     rng = np.random.default_rng(seed)
 
-    fig = plt.figure("Polygons after removing holes", figsize=(8, 8))
-    ax = fig.add_subplot(111)
+    color_pool = [
+        "#ff1744", 
+        "#f50057", 
+        "#d500f9", 
+        "#651fff", 
+        "#2979ff",
+        "#00b0ff",
+        "#00e5ff", 
+        "#1de9b6",  
+        "#00e676",  
+        "#76ff03", 
+        "#c6ff00",  
+        "#ffea00",  
+        "#ffc400",
+        "#ff9100", 
+        "#ff3d00", 
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, 8))
 
     ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
 
     if info["cycles_info"]:
-        for item in info["cycles_info"]:
+        shuffled_pool = color_pool.copy()
+        rng.shuffle(shuffled_pool)
+
+        for idx, item in enumerate(info["cycles_info"]):
             cycle = item["cycle"]
 
             if len(cycle) >= 3:
                 pts = np.array([(p[1] - 0.5, p[0] - 0.5) for p in cycle], dtype=float)
-                color = rng.random(3)
-                h = rng.random()
-                s = rng.uniform(0.75, 1.0)   # high saturation -> not pale
-                v = rng.uniform(0.35, 0.85)  # avoid near-white
-                color = hsv_to_rgb([h, s, v])
-                    
+
+                color = shuffled_pool[idx % len(shuffled_pool)]
+
                 poly = Polygon(
                     pts,
                     closed=True,
                     facecolor=color,
                     edgecolor="none",
-                    linewidth=0                
-                    )
+                    linewidth=0
+                )
                 ax.add_patch(poly)
 
-    ax.set_title("Kept polygons")
+    ax.set_title("Decomposed image to {} polygons".format(len(info["cycles_info"])))
     ax.set_axis_off()
     plt.tight_layout()
+    plt.savefig("Results45/" + file_name + "_gdm45.png", dpi=600, bbox_inches="tight")
 
 
 def visualize_removed_hole_faces(binary_image, info):
@@ -648,17 +1012,18 @@ def visualize_removed_hole_faces(binary_image, info):
     plt.tight_layout()
 
 
-def visualize_everything_separate(
+def visualize_everything_separate(file_name,
     binary_image, nodes, A, G, info, show_labels=False, seed=None
 ):
     visualize_corner_classes(binary_image, info)
     visualize_augmented_graph(binary_image, nodes, G, info, show_labels=show_labels)
     visualize_holes(binary_image, info)
-    visualize_cycles(binary_image, info, seed=seed)
+    visualize_cycles(file_name, binary_image, info, seed=seed)
     plt.show()
 
-def single_image_decomp(binary_image):
+def single_image_decomp(file_name, binary_image):
     try:
+        print(f"Processing {file_name}...")
         nodes, A, G, info = build_augmented_lattice_graph(binary_image)
         
         print("Number of polygons:", len(info["cycles_info"]))
@@ -667,19 +1032,19 @@ def single_image_decomp(binary_image):
     except Exception as e:
         print(f"Error processing image: {e}")
 
-    visualize_everything_separate(binary_image, nodes, A, G, info, seed=42)
+    #visualize_everything_separate(file_name, binary_image, nodes, A, G, info, seed=42)
+    visualize_cycles(file_name, binary_image, info, seed=42)
 
 def batch_process_images(directory):
     try:
         for file_name in os.listdir(directory):
             full_path = os.path.join(directory, file_name)
             if file_name.endswith(".tif"):
-                print(f"Processing {file_name}...")
-                
+                file_name_no_ext = os.path.splitext(file_name)[0]
                 image = Image.open(full_path)
                 array_image = np.array(image)
                 binary_image = np.array(array_image).astype(bool).astype(int)
-                single_image_decomp(binary_image)
+                single_image_decomp(file_name_no_ext, binary_image)
     except Exception as e:
         print(f"Error processing images in directory: {e}")
 
@@ -716,7 +1081,6 @@ if __name__ == "__main__":
     binary_image[103:129, 253:279] = 1
     binary_image[64:128, 64:128] = 1
     """
-    
     """
     #Test 2:
     binary_image = np.zeros((300, 300), dtype=np.uint8)
@@ -735,17 +1099,44 @@ if __name__ == "__main__":
     binary_image[70:80, 45:55] = 0
     """
     
-    """
+    
     #Running on actual image:
-    file_name = "TestImages/joint_K7.tif"
+    file_name = "TestImages/phantom_6.tif"
     image = Image.open(file_name)
     array_image = np.array(image)
     binary_image = np.array(array_image).astype(bool).astype(int)
-    """
-    
-    #single_image_decomp(binary_image)
     
     """
+    #joint_K2
+    X,Y = np.indices(binary_image.shape)
+    x1, y1 = 15, 256
+    x2, y2 = 256, 15
+    x3, y3 = 256, 0
+    x4, y4 = 0, 256
+    mask1 = (Y-y1)*(x2-x1)>(X-x1)*(y2-y1)
+    mask2 = (Y-y3)*(x4-x3)>(X-x3)*(y4-y3)
+    binary_image[mask1]=0
+    binary_image[mask2]=0"""
+    
+    """
+    X,Y = np.indices(binary_image.shape)
+    x1, y1 = 15, 256
+    x2, y2 = 256, 15
+    x3, y3 = 256, 70
+    x4, y4 = 70, 256
+    mask1 = (Y-y1)*(x2-x1)>(X-x1)*(y2-y1)
+    mask2 = (Y-y3)*(x4-x3)>(X-x3)*(y4-y3)
+    #binary_image[mask1]=0
+    binary_image[mask2]=0
+    """
+    """
+    binary_image[0:35, 0:256] = 0
+    binary_image[80:256, 0:256] = 0
+    binary_image[0:256, 0:170] = 0
+    binary_image[0:256, 222:256] = 0
+    """
+    #single_image_decomp(file_name, binary_image)
+    
     directory = "TestImages"
     batch_process_images(directory)
-    """
+    
