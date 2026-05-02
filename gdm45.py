@@ -7,21 +7,25 @@ from matplotlib.path import Path
 from collections import deque
 from PIL import Image
 import os
-from matplotlib.colors import hsv_to_rgb
+import json
+
 
 @dataclass(frozen=True)
 class Ray:
     start: tuple[int, int]
     end: tuple[int, int]
 
+
 def inside_pixel(image: np.ndarray, r: int, c: int) -> bool:
     h, w = image.shape
     return 0 <= r < h and 0 <= c < w
+
 
 def get_pixel(image: np.ndarray, r: int, c: int, default: int = 0) -> int:
     if inside_pixel(image, r, c):
         return int(image[r, c])
     return default
+
 
 def extract_boundary_segments(binary_image: np.ndarray):
     img = (binary_image > 0).astype(np.uint8)
@@ -54,6 +58,7 @@ def build_boundary_graph(segments):
         G.add_edge(a, b)
     return G
 
+
 def checkerboard_type_at_vertex(binary_image: np.ndarray, v: tuple[int, int]):
     r, c = v
     h, w = binary_image.shape
@@ -61,10 +66,13 @@ def checkerboard_type_at_vertex(binary_image: np.ndarray, v: tuple[int, int]):
     if not (1 <= r < h and 1 <= c < w):
         return None
 
-    block = np.array([
-        [binary_image[r - 1, c - 1], binary_image[r - 1, c]],
-        [binary_image[r,     c - 1], binary_image[r,     c]],
-    ], dtype=np.uint8)
+    block = np.array(
+        [
+            [binary_image[r - 1, c - 1], binary_image[r - 1, c]],
+            [binary_image[r, c - 1], binary_image[r, c]],
+        ],
+        dtype=np.uint8,
+    )
 
     if np.array_equal(block, np.array([[0, 1], [1, 0]], dtype=np.uint8)):
         return "01_10"
@@ -131,8 +139,8 @@ def find_lattice_corners(binary_image: np.ndarray):
             corners_checker_10_01.append(v)
             continue
 
-        ne_ok = (get_pixel(binary_image, r - 1, c, 0) != 0)
-        sw_ok = (get_pixel(binary_image, r, c - 1, 0) != 0)
+        ne_ok = get_pixel(binary_image, r - 1, c, 0) != 0
+        sw_ok = get_pixel(binary_image, r, c - 1, 0) != 0
 
         if ne_ok:
             corners_NE.append(v)
@@ -151,6 +159,7 @@ def find_lattice_corners(binary_image: np.ndarray):
         segments,
         boundary_graph,
     )
+
 
 def crossed_pixel_for_diagonal_step(v: tuple[int, int], di: int, dj: int):
     r, c = v
@@ -206,6 +215,7 @@ def deduplicate_rays(rays):
             unique.append(Ray(start=key[0], end=key[1]))
 
     return unique
+
 
 def build_selected_boundary_graph(boundary_graph: nx.Graph, selected_nodes):
     selected_nodes = set(selected_nodes) & set(boundary_graph.nodes())
@@ -264,13 +274,20 @@ def graph_to_adjacency_matrix(G: nx.Graph):
 
     return nodes, A
 
+
 def get_neighbors(r, c, h, w, connectivity=4):
     if connectivity == 4:
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
     elif connectivity == 8:
         directions = [
-            (-1, 0), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1),
+            (-1, 0),
+            (1, 0),
+            (0, -1),
+            (0, 1),
+            (-1, -1),
+            (-1, 1),
+            (1, -1),
+            (1, 1),
         ]
     else:
         raise ValueError("connectivity must be 4 or 8")
@@ -285,7 +302,9 @@ def adjacency_neighbors(A: np.ndarray, u: int):
     return [v for v, connected in enumerate(A[u]) if connected]
 
 
-def bfs_shortest_path_excluding(A: np.ndarray, source: int, target: int, forbidden=None):
+def bfs_shortest_path_excluding(
+    A: np.ndarray, source: int, target: int, forbidden=None
+):
     if source == target:
         return [source]
 
@@ -324,7 +343,9 @@ def bfs_shortest_path_excluding(A: np.ndarray, source: int, target: int, forbidd
     return None
 
 
-def bfs_shortest_path_without_edge(A: np.ndarray, source: int, target: int, banned_edge):
+def bfs_shortest_path_without_edge(
+    A: np.ndarray, source: int, target: int, banned_edge
+):
     banned_edge = tuple(sorted(banned_edge))
 
     n = A.shape[0]
@@ -397,10 +418,7 @@ def is_chordless_cycle_graph(G: nx.Graph, cycle):
     if m < 3:
         return False
 
-    boundary_edges = {
-        tuple(sorted((cycle[i], cycle[(i + 1) % m])))
-        for i in range(m)
-    }
+    boundary_edges = {tuple(sorted((cycle[i], cycle[(i + 1) % m]))) for i in range(m)}
 
     for i in range(m):
         for j in range(i + 1, m):
@@ -453,12 +471,13 @@ def shortest_cycles_through_start(A: np.ndarray, start: int):
 
 def find_minimal_cycles_bfs(A: np.ndarray, triangle_start_indices=None):
     n = A.shape[0]
-    triangle_start_indices = [] if triangle_start_indices is None else list(triangle_start_indices)
+    triangle_start_indices = (
+        [] if triangle_start_indices is None else list(triangle_start_indices)
+    )
 
-    triangle_start_indices = sorted(set(
-        idx for idx in triangle_start_indices
-        if 0 <= idx < n
-    ))
+    triangle_start_indices = sorted(
+        set(idx for idx in triangle_start_indices if 0 <= idx < n)
+    )
 
     cycle_map = {}
     processed_starts = set()
@@ -563,16 +582,19 @@ def find_holes(binary_image, connectivity=4):
                     mask[x, y] = True
                     hole_label_image[x, y] = hole_id
 
-                holes.append({
-                    "id": hole_id,
-                    "pixels": component,
-                    "mask": mask,
-                    "bbox": (min(rows), max(rows), min(cols), max(cols)),
-                    "centroid": (float(np.mean(rows)), float(np.mean(cols))),
-                    "area": len(component),
-                })
+                holes.append(
+                    {
+                        "id": hole_id,
+                        "pixels": component,
+                        "mask": mask,
+                        "bbox": (min(rows), max(rows), min(cols), max(cols)),
+                        "centroid": (float(np.mean(rows)), float(np.mean(cols))),
+                        "area": len(component),
+                    }
+                )
 
     return holes, hole_label_image
+
 
 def canonical_cycle_nodes(cycle):
     cycle = list(cycle)
@@ -633,12 +655,10 @@ def extract_bounded_faces(G: nx.Graph):
     outer_face = max(faces, key=lambda f: abs(polygon_signed_area(f)))
     outer_key = canonical_cycle_nodes(outer_face)
 
-    bounded_faces = [
-        face for face in faces
-        if canonical_cycle_nodes(face) != outer_key
-    ]
+    bounded_faces = [face for face in faces if canonical_cycle_nodes(face) != outer_key]
 
     return bounded_faces, outer_face
+
 
 def face_contains_hole(face, holes):
     verts = np.array([(c, r) for (r, c) in face], dtype=float)
@@ -657,6 +677,7 @@ def face_contains_hole(face, holes):
                 return True
 
     return False
+
 
 def remove_hole_faces(faces, holes):
     kept_faces = []
@@ -734,12 +755,257 @@ def find_hole_boundary_cycles(binary_image: np.ndarray, holes):
     return cycles
 
 
+import math
+import numpy as np
+
+
+def close_cycle(cycle):
+    if len(cycle) == 0:
+        return []
+    if cycle[0] == cycle[-1]:
+        return cycle[:]
+    return cycle + [cycle[0]]
+
+
+def are_collinear(a, b, c):
+    ar, ac = a
+    br, bc = b
+    cr, cc = c
+    return (br - ar) * (cc - bc) == (bc - ac) * (cr - br)
+
+
+def simplify_cycle_vertices(cycle):
+    if len(cycle) < 3:
+        return cycle[:]
+
+    pts = cycle[:]
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+
+    changed = True
+    while changed and len(pts) >= 3:
+        changed = False
+        new_pts = []
+        n = len(pts)
+
+        for i in range(n):
+            prev_pt = pts[(i - 1) % n]
+            curr_pt = pts[i]
+            next_pt = pts[(i + 1) % n]
+
+            if are_collinear(prev_pt, curr_pt, next_pt):
+                changed = True
+                continue
+
+            new_pts.append(curr_pt)
+
+        pts = new_pts
+
+    return pts
+
+
+def polygon_area(cycle):
+    pts = simplify_cycle_vertices(cycle)
+    if len(pts) < 3:
+        return 0.0
+
+    area2 = 0
+    n = len(pts)
+    for i in range(n):
+        r1, c1 = pts[i]
+        r2, c2 = pts[(i + 1) % n]
+        x1, y1 = c1, r1
+        x2, y2 = c2, r2
+        area2 += x1 * y2 - x2 * y1
+
+    return abs(area2) / 2.0
+
+
+def edge_type_and_level(p, q):
+    r1, c1 = p
+    r2, c2 = q
+
+    if r1 == r2:
+        return "H", r1
+
+    if c1 == c2:
+        return "V", c1
+
+    dr = r2 - r1
+    dc = c2 - c1
+
+    if dr == -dc:
+        return "D1", r1 + c1
+
+    if dr == dc:
+        return "D2", r1 - c1
+
+    raise ValueError(f"Unsupported edge direction: {p} -> {q}")
+
+
+def classify_polygon(cycle):
+    pts = simplify_cycle_vertices(cycle)
+    n = len(pts)
+
+    if n < 3:
+        return "degenerate"
+
+    if n == 3:
+        return "triangle"
+
+    if n != 4:
+        return "other"
+
+    edge_info = []
+    for i in range(4):
+        a = pts[i]
+        b = pts[(i + 1) % 4]
+        etype, level = edge_type_and_level(a, b)
+        edge_info.append((etype, level))
+
+    pair1_parallel = edge_info[0][0] == edge_info[2][0]
+    pair2_parallel = edge_info[1][0] == edge_info[3][0]
+
+    if pair1_parallel and pair2_parallel:
+        return "parallelogram"
+
+    if pair1_parallel or pair2_parallel:
+        return "trapezoid"
+
+    return "other"
+
+
+def is_half_pixel_triangle(cycle, tol=1e-9):
+    pts = simplify_cycle_vertices(cycle)
+    return len(pts) == 3 and abs(polygon_area(pts) - 0.5) < tol
+
+
+def opposite_edge_data(pts):
+    """
+    For a simplified quadrilateral, returns the four edges as
+    (type, level).
+    """
+    out = []
+    for i in range(4):
+        a = pts[i]
+        b = pts[(i + 1) % 4]
+        out.append(edge_type_and_level(a, b))
+    return out
+
+
+def line_gap(e1, e2):
+    t1, k1 = e1
+    t2, k2 = e2
+    if t1 != t2:
+        raise ValueError("line_gap called on non-parallel lines")
+    return abs(k1 - k2)
+
+
+def quadrilateral_width_lattice(cycle):
+    pts = simplify_cycle_vertices(cycle)
+    if len(pts) != 4:
+        return None
+
+    e = opposite_edge_data(pts)
+
+    pair1_parallel = e[0][0] == e[2][0]
+    pair2_parallel = e[1][0] == e[3][0]
+
+    widths = []
+
+    if pair1_parallel:
+        widths.append(line_gap(e[0], e[2]))
+
+    if pair2_parallel:
+        widths.append(line_gap(e[1], e[3]))
+
+    if not widths:
+        return None
+
+    return min(widths)
+
+
+def is_one_pixel_wide_parallelogram(cycle):
+    return (
+        classify_polygon(cycle) == "parallelogram"
+        and quadrilateral_width_lattice(cycle) == 1
+    )
+
+
+def is_one_pixel_wide_trapezoid(cycle):
+    return (
+        classify_polygon(cycle) == "trapezoid"
+        and quadrilateral_width_lattice(cycle) == 1
+    )
+
+
+def count_decomposition_shapes(info):
+    counts = {
+        "triangles": 0,
+        "parallelograms": 0,
+        "trapezoids": 0,
+        "other": 0,
+        "half_pixel_triangles": 0,
+        "one_pixel_wide_parallelograms": 0,
+        "one_pixel_wide_trapezoids": 0,
+    }
+
+    simplified_cycles = [
+        simplify_cycle_vertices(item["cycle"]) for item in info["cycles_info"]
+    ]
+
+    unique = {}
+    for cycle in simplified_cycles:
+        if len(cycle) >= 3:
+            unique[canonical_cycle_nodes(cycle)] = cycle
+    simplified_cycles = list(unique.values())
+
+    cycles_dict = [
+        {
+            "id": i,
+            "cycle": cycle,
+            "classification": classify_polygon(cycle),
+        }
+        for i, cycle in enumerate(simplified_cycles)
+    ]
+
+    for item in cycles_dict:
+        cls = item["classification"]
+        geom = item["cycle"]
+
+        if cls == "triangle":
+            counts["triangles"] += 1
+            if is_half_pixel_triangle(geom):
+                counts["half_pixel_triangles"] += 1
+
+        elif cls == "parallelogram":
+            counts["parallelograms"] += 1
+            if is_one_pixel_wide_parallelogram(geom):
+                counts["one_pixel_wide_parallelograms"] += 1
+
+        elif cls == "trapezoid":
+            counts["trapezoids"] += 1
+            if is_one_pixel_wide_trapezoid(geom):
+                counts["one_pixel_wide_trapezoids"] += 1
+
+        else:
+            counts["other"] += 1
+
+    return cycles_dict, counts
+
 def build_augmented_lattice_graph(binary_image: np.ndarray):
     binary_image = (binary_image > 0).astype(np.uint8)
 
-    corners, corners_NE, corners_SW, corners_triangle, corners_checker_01_10, corners_checker_10_01, segments, boundary_graph = (
-        find_lattice_corners(binary_image)
-    )
+    (
+        corners,
+        corners_NE,
+        corners_SW,
+        corners_triangle,
+        corners_checker_01_10,
+        corners_checker_10_01,
+        segments,
+        boundary_graph,
+    ) = find_lattice_corners(binary_image)
 
     rays_NE = project_NE_ray(binary_image, corners_NE, corners)
     rays_SW = project_SW_ray(binary_image, corners_SW, corners)
@@ -763,9 +1029,7 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
     holes, hole_label_image = find_holes(binary_image, connectivity=4)
 
     triangle_start_indices = [
-        node_to_idx[v]
-        for v in corners_triangle
-        if v in node_to_idx
+        node_to_idx[v] for v in corners_triangle if v in node_to_idx
     ]
 
     triangle_seed_cycles_idx, used_idx, potential_idx = find_minimal_cycles_bfs(
@@ -796,7 +1060,9 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
     existing_removed = {canonical_cycle_nodes(cycle) for cycle in removed_hole_faces}
 
     for hole, hole_cycles in zip(holes, hole_boundary_cycles_per_hole):
-        already_removed = any(face_contains_hole(cycle, [hole]) for cycle in removed_hole_faces)
+        already_removed = any(
+            face_contains_hole(cycle, [hole]) for cycle in removed_hole_faces
+        )
         if already_removed:
             continue
 
@@ -819,11 +1085,13 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
     for cycle in kept_cycles:
         if all(node in node_to_idx for node in cycle):
             cycle_idx = [node_to_idx[node] for node in cycle]
-            cycles_info_idx.append({
-                "start": cycle_idx[0],
-                "cycle": cycle_idx,
-                "source": "bfs",
-            })
+            cycles_info_idx.append(
+                {
+                    "start": cycle_idx[0],
+                    "cycle": cycle_idx,
+                    "source": "bfs",
+                }
+            )
 
     info = {
         "segments": segments,
@@ -850,6 +1118,7 @@ def build_augmented_lattice_graph(binary_image: np.ndarray):
     }
 
     return nodes, A, G, info
+
 
 def draw_graph_edges(ax, G, alpha=1.0):
     for u, v, data in G.edges(data=True):
@@ -937,36 +1206,36 @@ def visualize_holes(binary_image, info):
     plt.tight_layout()
 
 
-def visualize_cycles(file_name, binary_image, info, seed=None):
+def visualize_cycles(file_name, binary_image, cycles_dict, seed=None):
     rng = np.random.default_rng(seed)
 
     color_pool = [
-        "#ff1744", 
-        "#f50057", 
-        "#d500f9", 
-        "#651fff", 
+        "#ff1744",
+        "#f50057",
+        "#d500f9",
+        "#651fff",
         "#2979ff",
         "#00b0ff",
-        "#00e5ff", 
-        "#1de9b6",  
-        "#00e676",  
-        "#76ff03", 
-        "#c6ff00",  
-        "#ffea00",  
+        "#00e5ff",
+        "#1de9b6",
+        "#00e676",
+        "#76ff03",
+        "#c6ff00",
+        "#ffea00",
         "#ffc400",
-        "#ff9100", 
-        "#ff3d00", 
+        "#ff9100",
+        "#ff3d00",
     ]
 
     fig, ax = plt.subplots(figsize=(8, 8))
 
     ax.imshow(binary_image, cmap="gray", origin="upper", interpolation="nearest")
 
-    if info["cycles_info"]:
+    if cycles_dict:
         shuffled_pool = color_pool.copy()
         rng.shuffle(shuffled_pool)
 
-        for idx, item in enumerate(info["cycles_info"]):
+        for idx, item in enumerate(cycles_dict):
             cycle = item["cycle"]
 
             if len(cycle) >= 3:
@@ -975,18 +1244,14 @@ def visualize_cycles(file_name, binary_image, info, seed=None):
                 color = shuffled_pool[idx % len(shuffled_pool)]
 
                 poly = Polygon(
-                    pts,
-                    closed=True,
-                    facecolor=color,
-                    edgecolor="none",
-                    linewidth=0
+                    pts, closed=True, facecolor=color, edgecolor="none", linewidth=0
                 )
                 ax.add_patch(poly)
 
-    ax.set_title("Decomposed image to {} polygons".format(len(info["cycles_info"])))
+    ax.set_title("Decomposed image to {} polygons".format(len(cycles_dict)))
     ax.set_axis_off()
     plt.tight_layout()
-    plt.savefig("Results45/" + file_name + "_gdm45.png", dpi=600, bbox_inches="tight")
+    # plt.savefig("Results45/" + file_name + "_gdm45.png", dpi=600, bbox_inches="tight")
 
 
 def visualize_removed_hole_faces(binary_image, info):
@@ -1012,28 +1277,80 @@ def visualize_removed_hole_faces(binary_image, info):
     plt.tight_layout()
 
 
-def visualize_everything_separate(file_name,
-    binary_image, nodes, A, G, info, show_labels=False, seed=None
+def visualize_everything_separate(
+    file_name,
+    binary_image,
+    nodes,
+    A,
+    G,
+    info,
+    cycles_dict,
+    show_labels=False,
+    seed=None,
 ):
     visualize_corner_classes(binary_image, info)
     visualize_augmented_graph(binary_image, nodes, G, info, show_labels=show_labels)
     visualize_holes(binary_image, info)
-    visualize_cycles(file_name, binary_image, info, seed=seed)
+    visualize_cycles(file_name, binary_image, cycles_dict, seed=seed)
     plt.show()
 
-def single_image_decomp(file_name, binary_image):
+def save_cycles_dict_json(image_file_name, cycles_dict, counts, output_dir="."):
+    """
+    Save decomposition result to JSON.
+
+    Example:
+        image_file_name = "test image.tiff"
+        -> "test_image_45decomp.json"
+    """
+    base_name = os.path.splitext(os.path.basename(image_file_name))[0]
+    safe_name = base_name.replace(" ", "_")
+    json_name = f"{safe_name}_45decomp.json"
+    json_path = os.path.join(output_dir, json_name)
+
+    # Convert tuples to lists so JSON can store them cleanly
+    serializable_cycles = []
+    for item in cycles_dict:
+        serializable_item = {
+            "id": item["id"],
+            "classification": item["classification"],
+            "cycle": [list(vertex) for vertex in item["cycle"]],
+        }
+        serializable_cycles.append(serializable_item)
+
+    data = {
+        "source_image": image_file_name,
+        "number_of_polygons": len(serializable_cycles),
+        "number_by_classes": counts,
+        "cycles_dict": serializable_cycles,
+    }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+    print(f"Saved decomposition JSON to: {json_path}")
+    return json_path
+
+def single_image_decomp(binary_image, file_name="test_image"):
     try:
         print(f"Processing {file_name}...")
         nodes, A, G, info = build_augmented_lattice_graph(binary_image)
+
+        cycles_dict, counts = count_decomposition_shapes(info)
+
+        for i, item in enumerate(cycles_dict):
+            print(f'Polygon {i} class: {item["classification"]}, nodes: {item["cycle"]}')
+        print("Number of polygons: ", len(cycles_dict))
+        print(counts)
+        save_cycles_dict_json(file_name, cycles_dict, counts, output_dir="Decompositions45")
+        """visualize_everything_separate(
+            file_name, binary_image, nodes, A, G, info, cycles_dict, seed=42
+        )"""
         
-        print("Number of polygons:", len(info["cycles_info"]))
-        for i, item in enumerate(info["cycles_info"]):
-            print(f'Polygon {i} nodes: {item["cycle"]}')
     except Exception as e:
         print(f"Error processing image: {e}")
 
-    #visualize_everything_separate(file_name, binary_image, nodes, A, G, info, seed=42)
-    visualize_cycles(file_name, binary_image, info, seed=42)
+    visualize_cycles(file_name, binary_image, cycles_dict, seed=42)
+
 
 def batch_process_images(directory):
     try:
@@ -1044,11 +1361,12 @@ def batch_process_images(directory):
                 image = Image.open(full_path)
                 array_image = np.array(image)
                 binary_image = np.array(array_image).astype(bool).astype(int)
-                single_image_decomp(file_name_no_ext, binary_image)
+                single_image_decomp( binary_image, file_name=file_name_no_ext)
     except Exception as e:
         print(f"Error processing images in directory: {e}")
 
-def triangle_matrix(M,h=64, w=64, apex_row=8, apex_col=None, height=40, base_width=40):
+
+def triangle_matrix(M, h=64, w=64, apex_row=8, apex_col=None, height=40, base_width=40):
     if apex_col is None:
         apex_col = w // 2
 
@@ -1064,13 +1382,14 @@ def triangle_matrix(M,h=64, w=64, apex_row=8, apex_col=None, height=40, base_wid
         left = max(left, 0)
         right = min(right, w - 1)
         if left <= right:
-            M[row, left:right+1] = 1
+            M[row, left : right + 1] = 1
 
     return M
 
+
 if __name__ == "__main__":
     """
-    #Test 1: 
+    #Test 1:
     binary_image = np.zeros((300, 300), dtype=np.uint8)
     binary_image[53:179, 28:229] = 1
     binary_image[3:54, 78:129] = 1
@@ -1091,17 +1410,17 @@ if __name__ == "__main__":
     binary_image[170:200, 170:200] = 1
     binary_image[100:130, 170:200] = 1
     """
-    
+
     """
     #Triangle test:
     binary_image = np.zeros((100, 100), dtype=np.uint8)
     binary_image = triangle_matrix(binary_image, h=100,w=100, apex_row=30, height=64, base_width=64)
     binary_image[70:80, 45:55] = 0
     """
+
     
-    
-    #Running on actual image:
-    file_name = "TestImages/phantom_6.tif"
+    # Running on actual image:
+    file_name = "TestImages/bullseye1.tif"
     image = Image.open(file_name)
     array_image = np.array(image)
     binary_image = np.array(array_image).astype(bool).astype(int)
@@ -1117,7 +1436,7 @@ if __name__ == "__main__":
     mask2 = (Y-y3)*(x4-x3)>(X-x3)*(y4-y3)
     binary_image[mask1]=0
     binary_image[mask2]=0"""
-    
+
     """
     X,Y = np.indices(binary_image.shape)
     x1, y1 = 15, 256
@@ -1135,8 +1454,8 @@ if __name__ == "__main__":
     binary_image[0:256, 0:170] = 0
     binary_image[0:256, 222:256] = 0
     """
-    #single_image_decomp(file_name, binary_image)
-    
+    single_image_decomp(binary_image, file_name=file_name)
+    """
     directory = "TestImages"
     batch_process_images(directory)
-    
+    """
