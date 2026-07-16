@@ -943,6 +943,7 @@ def visualize_cycles(
     save_png=False,
     output_dir="Results45",
     dpi=600,
+    angle=45
 ):
     rng = np.random.default_rng(seed)
     colors = [
@@ -988,7 +989,7 @@ def visualize_cycles(
         base_name = os.path.splitext(os.path.basename(str(file_name)))[0].replace(
             " ", "_"
         )
-        png_path = os.path.join(output_dir, f"{base_name}_gdm45.png")
+        png_path = os.path.join(output_dir, f"{base_name}_gdm{angle}.png")
         fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
     if visualize:
         plt.show()
@@ -997,12 +998,12 @@ def visualize_cycles(
     return png_path
 
 
-def save_cycles_dict_json(image_file_name, cycles_dict, counts, output_dir="."):
+def save_cycles_dict_json(image_file_name, cycles_dict, counts, output_dir=".", angle=45):
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(str(image_file_name)))[0].replace(
         " ", "_"
     )
-    json_path = os.path.join(output_dir, f"{base_name}_45decomp.json")
+    json_path = os.path.join(output_dir, f"{base_name}_{angle}decomp.json")
     data = {
         "source_image": str(image_file_name),
         "number_of_polygons": len(cycles_dict),
@@ -1052,11 +1053,12 @@ def single_image_decomp(
             visualize=visualize,
             save_png=save_png,
             output_dir=png_output_dir,
+            angle=decomposition_angle
         )
     json_path = None
     if save_to_json:
         json_path = save_cycles_dict_json(
-            file_name, cycles_dict, counts, output_dir=json_output_dir
+            file_name, cycles_dict, counts, output_dir=json_output_dir, angle=decomposition_angle
         )
     if verbose:
         for i, item in enumerate(cycles_dict):
@@ -1114,6 +1116,7 @@ def batch_process_images(
                 json_output_dir=json_output_dir,
                 png_output_dir=png_output_dir,
                 verbose=verbose,
+                decomposition_angle=decomposition_angle
             )
         )
     return results
