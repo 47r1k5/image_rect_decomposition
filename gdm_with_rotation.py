@@ -7,8 +7,8 @@ from mosaic import rectangular_decomposition
 from mosaic.utilities import plot_image_decomposition
 from pathlib import Path
 
-def rotate_image(image, angel , interpolation):
-    return  scipy.ndimage.rotate(image,angel,reshape=True,order=interpolation)
+def rotate_image(image, angle, interpolation):
+    return scipy.ndimage.rotate(image, angle, reshape=True, order=interpolation)
 
 
 def gdm_with_rotation(file_name, angle, show_original=False, show_decomposed=False):
