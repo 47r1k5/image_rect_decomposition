@@ -1030,11 +1030,19 @@ def single_image_decomp(
     json_output_dir="Decompositions45",
     png_output_dir="Results45",
     verbose=False,
+    decomposition_angle=45
 ):
     nodes, A, G, info = build_augmented_lattice_graph(binary_image)
     cycles_dict, counts = count_decomposition_shapes(info)
     file_stem = os.path.splitext(os.path.basename(str(file_name)))[0]
     png_path = None
+    if decomposition_angle == 45:
+        pass
+    elif decomposition_angle == 135:
+        binary_image = rotate_image(binary_image, angle=90, interpolation=0)
+    else:
+        raise ValueError("decomposition_angle must be either 45 or 135 degrees.")
+
     if visualize or save_png:
         png_path = visualize_cycles(
             file_stem,
@@ -1081,6 +1089,7 @@ def batch_process_images(
     json_output_dir="Decompositions45",
     png_output_dir="Results45",
     verbose=False,
+    decomposition_angle=45,
 ):
     results = []
     for file_name in sorted(os.listdir(directory)):
@@ -1088,6 +1097,13 @@ def batch_process_images(
             continue
         full_path = os.path.join(directory, file_name)
         binary_image = as_binary(np.array(Image.open(full_path)))
+        if decomposition_angle == 45:
+            pass
+        elif decomposition_angle == 135:
+            binary_image = rotate_image(binary_image, angle=90, interpolation=0)
+        else:
+            raise ValueError("decomposition_angle must be either 45 or 135 degrees.")
+        
         results.append(
             single_image_decomp(
                 binary_image,
@@ -1102,18 +1118,16 @@ def batch_process_images(
         )
     return results
 
+
 def rotate_image(image, angle, interpolation):
     return scipy.ndimage.rotate(image, angle, reshape=True, order=interpolation)
 
+
 if __name__ == "__main__":
-    file_name = "TestImages/phantom_3.tif"
+    """file_name = "TestImages/phantom_3.tif"
     image = Image.open(file_name)
     array_image = np.array(image)
     binary_image = as_binary(array_image)
-    decomposition_angle=45
-    
-    if(decomposition_angle==135):
-        binary_image = rotate_image(binary_image, angle=90, interpolation=0)
 
     single_image_decomp(
         binary_image,
@@ -1122,8 +1136,17 @@ if __name__ == "__main__":
         visualize=True,
         save_png=False,
         verbose=True,
-    )
-    """
+        decomposition_angle=135
+    )"""
+
     directory = "TestImages"
-    batch_process_images(directory)
-    """
+    batch_process_images(
+        directory,
+        save_to_json=True,
+        visualize=False,
+        save_png=True,
+        json_output_dir="Decompositions135",
+        png_output_dir="Results135",
+        verbose=True,
+        decomposition_angle=135,
+    )

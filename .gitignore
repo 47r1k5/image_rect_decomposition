@@ -57,10 +57,10 @@ PNGImages/
 Results/
 Results45/
 Decompositions45/
+Results135/
+Decompositions135/
 *.txt
 *.tif
-vlami.py
-test.py
 
 # Translations
 *.mo
